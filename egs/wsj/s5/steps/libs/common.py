@@ -103,35 +103,6 @@ class smart_open(object):
             self.file_handle.close()
 
 
-class smart_open(object):
-    """
-    This class is designed to be used with the "with" construct in python
-    to open files. It is similar to the python open() function, but
-    treats the input "-" specially to return either sys.stdout or sys.stdin
-    depending on whether the mode is "w" or "r".
-
-    e.g.: with smart_open(filename, 'w') as fh:
-            print ("foo", file=fh)
-    """
-    def __init__(self, filename, mode="r"):
-        self.filename = filename
-        self.mode = mode
-        assert self.mode == "w" or self.mode == "r"
-
-    def __enter__(self):
-        if self.filename == "-" and self.mode == "w":
-            self.file_handle = sys.stdout
-        elif self.filename == "-" and self.mode == "r":
-            self.file_handle = sys.stdin
-        else:
-            self.file_handle = open(self.filename, self.mode)
-        return self.file_handle
-
-    def __exit__(self, *args):
-        if self.filename != "-":
-            self.file_handle.close()
-
-
 def check_if_cuda_compiled():
     p = subprocess.Popen("cuda-compiled")
     p.communicate()
@@ -405,28 +376,31 @@ def read_matrix_ascii(file_or_fd):
         fname = file_or_fd.name
 
     first = fd.read(2)
-    if first != ' [':
+    if first != ' [' and first != b' [':
         logger.error(
             "Kaldi matrix file %s has incorrect format, "
             "only text format matrix files can be read by this script",
             fname)
+        if fd is not file_or_fd: fd.close()
         raise RuntimeError
 
     rows = []
     while True:
         line = fd.readline()
-        if len(line) == 0:
+        if not line:
             logger.error("Kaldi matrix file %s has incorrect format; "
                          "got EOF before end of matrix", fname)
-        if len(line.strip()) == 0 : continue # skip empty line
-        arr = line.strip().split()
-        if arr[-1] != ']':
+            if fd is not file_or_fd: fd.close()
+            raise RuntimeError
+        line = line.strip()
+        if len(line) == 0 : continue # skip empty line
+        arr = line.split()
+        if arr[-1] != b']' and arr[-1] != ']':
             rows.append([float(x) for x in arr])  # not last line
         else:
             rows.append([float(x) for x in arr[:-1]])  # lastline
+            if fd is not file_or_fd: fd.close()
             return rows
-    if fd is not file_or_fd:
-        fd.close()
 
 
 def read_key(fd):

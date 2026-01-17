@@ -4,6 +4,7 @@
 //           2012-2014  Johns Hopkins University (author: Daniel Povey)
 //                2017  Daniel Galvez
 //           2016-2018  Shiyin Kang
+//                2019  Yiwen Shao
 
 // See ../../COPYING for clarification regarding multiple authors
 //
@@ -21,8 +22,15 @@
 // limitations under the License.
 
 #if HAVE_CUDA == 1
+#ifdef __IS_HIP_COMPILE__
+#include <hip/hip_runtime_api.h>
+#include <hipblas/hipblas.h>
+
+#include "hipify.h"
+#else
 #include <cuda_runtime_api.h>
 #include <cublas_v2.h>
+#endif
 #endif
 
 #include "base/timer.h"
@@ -349,7 +357,7 @@ void CuVectorBase<Real>::ApplySoftMax() {
 }
 
 template<typename Real>
-void CuVectorBase<Real>::ApplyFloor(Real floor_val, MatrixIndexT *floored_count) {
+void CuVectorBase<Real>::Floor(const CuVectorBase<Real> &src, Real floor_val, MatrixIndexT *floored_count) {
 #if HAVE_CUDA == 1
   if (CuDevice::Instantiate().Enabled()) {
     int dimBlock(CU1DBLOCK);
@@ -360,8 +368,8 @@ void CuVectorBase<Real>::ApplyFloor(Real floor_val, MatrixIndexT *floored_count)
       // We are calling a function meant for matrices, by viewing the
       // vector as a matrix with a single row.
       ::MatrixDim dim = {1, Dim(), 1};
-      cuda_apply_floor(dimGrid, dimBlock, data_, floor_val, dim);
-      CuDevice::Instantiate().AccuProfile("CuVectorBase::ApplyFloorNoCount", tim);
+      cuda_floor(dimGrid, dimBlock, this->data_, src.Data(), floor_val, dim, 1);
+      CuDevice::Instantiate().AccuProfile("CuVectorBase::FloorNoCount", tim);
     } else {
       if (dim_ == 0) { *floored_count = 0; return; }
       CuTimer tim;
@@ -371,17 +379,18 @@ void CuVectorBase<Real>::ApplyFloor(Real floor_val, MatrixIndexT *floored_count)
       cuda_vec_apply_floor(dimGrid, dimBlock, data_, floor_val, count_vec.Data(), dim_);
       CU_SAFE_CALL(cudaGetLastError());
       *floored_count = count_vec.Sum();
-      CuDevice::Instantiate().AccuProfile("CuVectorBase::ApplyFloor", tim);
+      CuDevice::Instantiate().AccuProfile("CuVectorBase::Floor", tim);
     }
   } else
 #endif
   {
-    Vec().ApplyFloor(floor_val, floored_count);
+    Vec().Floor(src.Vec(), floor_val, floored_count);
   }
 }
 
 template<typename Real>
-void CuVectorBase<Real>::ApplyCeiling(Real ceiling_val, MatrixIndexT *ceiled_count) {
+void CuVectorBase<Real>::Ceiling(const CuVectorBase<Real> &src, Real ceiling_val,
+				 MatrixIndexT *ceiled_count) {
 #if HAVE_CUDA == 1
   if (CuDevice::Instantiate().Enabled()) {
     int dimBlock(CU1DBLOCK);
@@ -392,9 +401,9 @@ void CuVectorBase<Real>::ApplyCeiling(Real ceiling_val, MatrixIndexT *ceiled_cou
       // We are calling a function meant for matrices, by viewing the
       // vector as a matrix with a single row.
       ::MatrixDim dim = {1, Dim(), 1};
-      cuda_apply_ceiling(dimGrid, dimBlock, data_, ceiling_val, dim);
+      cuda_ceiling(dimGrid, dimBlock, this->data_, src.Data(), ceiling_val, dim, 1);
 
-      CuDevice::Instantiate().AccuProfile("CuVectorBase::ApplyCeilingNoCount", tim);
+      CuDevice::Instantiate().AccuProfile("CuVectorBase::CeilingNoCount", tim);
     } else {
       if (dim_ == 0) { *ceiled_count = 0; return; }
       CuTimer tim;
@@ -404,17 +413,17 @@ void CuVectorBase<Real>::ApplyCeiling(Real ceiling_val, MatrixIndexT *ceiled_cou
       cuda_vec_apply_ceiling(dimGrid, dimBlock, data_, ceiling_val, count_vec.Data(), dim_);
       CU_SAFE_CALL(cudaGetLastError());
       *ceiled_count = count_vec.Sum();
-      CuDevice::Instantiate().AccuProfile("CuVectorBase::ApplyCeiling", tim);
+      CuDevice::Instantiate().AccuProfile("CuVectorBase::Ceiling", tim);
     }
   } else
 #endif
   {
-    Vec().ApplyCeiling(ceiling_val, ceiled_count);
+    Vec().Ceiling(src.Vec(), ceiling_val, ceiled_count);
   }
 }
 
 template<typename Real>
-void CuVectorBase<Real>::ApplyPow(Real power) {
+void CuVectorBase<Real>::Pow(const CuVectorBase<Real> &src, Real power) {
 #if HAVE_CUDA == 1
   if (CuDevice::Instantiate().Enabled()) {
     if (dim_ == 0) return;
@@ -425,13 +434,13 @@ void CuVectorBase<Real>::ApplyPow(Real power) {
     dim3 dimGrid(n_blocks(Dim(), CU1DBLOCK), 1);
     ::MatrixDim fake_matrix_dim = { 1, Dim(), 1 };
     // num_cols is Dim(), num_rows is 1, stride is 1 (it's a don't-care).
-    cuda_apply_pow(dimGrid, dimBlock, data_, power, fake_matrix_dim);
+    cuda_pow(dimGrid, dimBlock, this->data_, src.Data(), power, fake_matrix_dim, 1);
     CU_SAFE_CALL(cudaGetLastError());
     CuDevice::Instantiate().AccuProfile("CuVectorBase::ApplyPow", tim);
   } else
 #endif
   {
-    Vec().ApplyPow(power);
+    Vec().Pow(src.Vec(), power);
   }
 }
 
@@ -627,7 +636,10 @@ void CuVectorBase<Real>::AddDiagMatMat(Real alpha, const CuMatrixBase<Real> &M,
                                   N.Data(), N.Stride(), beta, data_);
       } else {
         // Case 2: diag(M'*N) == sum(M.*N, 1)
-        // 16x16 or 8x32 2D block for coalesced memory access.
+        // (2*CU1DBLOCK/GPU_WARP_SIZE)xGPU_WARP_SIZE/2
+        // or
+        // (CU1DBLOCK/GPU_WARP_SIZE)xGPU_WARP_SIZE
+        // 2D block for coalesced memory access.
         // Grid shape is designed as follows,
         // 1. for small matrices, use 1D grid with only 1 row of 16x16 block,
         //    to avoid multiple kernel launch;
@@ -635,11 +647,12 @@ void CuVectorBase<Real>::AddDiagMatMat(Real alpha, const CuMatrixBase<Real> &M,
         //    use 1- or 2-D grid so that the grid contains
         //    at least and not much larger than 'kOptNumBlocks' blocks
         //    to fully utilize the GPU;
-        const int32 warpSize = 32;
+        const int32 warpSize = GPU_WARP_SIZE;
         const int32 kOptNumBlocks = 512;
         const int32 tile_dim =
-            (N.NumRows() < 4096 && N.NumCols() < kOptNumBlocks * warpSize) ?
-                16 : 32;
+            (N.NumRows() < 4096 && N.NumCols() < kOptNumBlocks * warpSize)
+                ? GPU_WARP_SIZE / 2
+                : GPU_WARP_SIZE;
         dim3 dimBlock(tile_dim, CU1DBLOCK / tile_dim);
         dim3 dimGrid(n_blocks(N.NumCols(), dimBlock.x),
                      n_blocks(N.NumRows(), dimBlock.y));
@@ -665,8 +678,9 @@ void CuVectorBase<Real>::AddDiagMatMat(Real alpha, const CuMatrixBase<Real> &M,
         // 16x16 or 8x32 2D block for matrix transpose and coalesced memory access.
         // One block per 'tile_dim' columns of N.
         // 1D grid expands along the row of N.
-        int tile_dim =
-            sizeof(Real) == sizeof(float) && N.NumCols() >= 2048 ? 32 : 16;
+        int tile_dim = sizeof(Real) == sizeof(float) && N.NumCols() >= 2048
+                           ? GPU_WARP_SIZE
+                           : GPU_WARP_SIZE / 2;
         dim3 dimBlock(tile_dim, CU1DBLOCK / tile_dim);
         dim3 dimGrid(n_blocks(N.NumCols(), tile_dim));
         cuda_add_diag_mat_mat_MN(dimGrid, dimBlock, alpha, M.Data(), M.Stride(),
@@ -674,8 +688,9 @@ void CuVectorBase<Real>::AddDiagMatMat(Real alpha, const CuMatrixBase<Real> &M,
       } else {
         // Case 4: diag(M'*N') == sum(N'.*M, 1)
         // Same kernel and config as case 3 except M and N are swapped.
-        int tile_dim =
-            sizeof(Real) == sizeof(float) && N.NumCols() >= 2048 ? 32 : 16;
+        int tile_dim = sizeof(Real) == sizeof(float) && N.NumCols() >= 2048
+                           ? GPU_WARP_SIZE
+                           : GPU_WARP_SIZE / 2;
         dim3 dimBlock(tile_dim, CU1DBLOCK / tile_dim);
         dim3 dimGrid(n_blocks(M.NumCols(), tile_dim));
         cuda_add_diag_mat_mat_MN(dimGrid, dimBlock, alpha, N.Data(), N.Stride(),
@@ -1280,8 +1295,13 @@ void CuVectorBase<Real>::AddRowSumMat(Real alpha, const CuMatrixBase<Real> &mat,
 #if HAVE_CUDA == 1
   if (CuDevice::Instantiate().Enabled()) {
     CuTimer tim;
-    cuda_add_row_sum_mat(mat.NumCols(), CU1DBLOCK, Data(), mat.Data(),
+    // Allocate 2*NumCols scratch space for intermediate reduction results
+    // and flag values for cuda block ordering guarantees
+    CuArray<Real> scratch(2*mat.NumCols());
+    cuda_add_row_sum_mat(Data(), mat.Data(), reinterpret_cast<void*>(scratch.Data()),
                          mat.Dim(), alpha, beta);
+    // cuda_add_row_sum_mat(mat.NumCols(), CU1DBLOCK, Data(), mat.Data(),
+    //                      mat.Dim(), alpha, beta);
     CU_SAFE_CALL(cudaGetLastError());
     
     CuDevice::Instantiate().AccuProfile(__func__, tim);

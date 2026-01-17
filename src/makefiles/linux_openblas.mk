@@ -1,5 +1,8 @@
 # OpenBLAS specific Linux configuration
 
+ifndef DEBUG_LEVEL
+$(error DEBUG_LEVEL not defined.)
+endif
 ifndef DOUBLE_PRECISION
 $(error DOUBLE_PRECISION not defined.)
 endif
@@ -16,16 +19,24 @@ ifndef OPENBLASLIBS
 $(error OPENBLASLIBS not defined.)
 endif
 
-CXXFLAGS = -std=c++11 -I.. -isystem $(OPENFSTINC) -O1 $(EXTRA_CXXFLAGS) \
+CXXFLAGS = -std=$(CXXLANGVERSION) -I.. -isystem $(OPENFSTINC) -O1 $(EXTRA_CXXFLAGS) \
            -Wall -Wno-sign-compare -Wno-unused-local-typedefs \
            -Wno-deprecated-declarations -Winit-self \
+           -DOPENFST_VER=$(OPENFSTVER) \
            -DKALDI_DOUBLEPRECISION=$(DOUBLE_PRECISION) \
            -DHAVE_EXECINFO_H=1 -DHAVE_CXXABI_H -DHAVE_OPENBLAS -I$(OPENBLASINC) \
-           -msse -msse2 -pthread \
-           -g # -O0 -DKALDI_PARANOID
+           -msse -msse2 \
+           -g
 
 ifeq ($(KALDI_FLAVOR), dynamic)
 CXXFLAGS += -fPIC
+endif
+
+ifeq ($(DEBUG_LEVEL), 0)
+CXXFLAGS += -DNDEBUG
+endif
+ifeq ($(DEBUG_LEVEL), 2)
+CXXFLAGS += -O0 -DKALDI_PARANOID
 endif
 
 # Compiler specific flags
@@ -35,5 +46,13 @@ ifeq ($(findstring clang,$(COMPILER)),clang)
 CXXFLAGS += -Wno-mismatched-tags
 endif
 
-LDFLAGS = $(EXTRA_LDFLAGS) $(OPENFSTLDFLAGS) -rdynamic
-LDLIBS = $(EXTRA_LDLIBS) $(OPENFSTLIBS) $(OPENBLASLIBS) -lm -lpthread -ldl
+LDFLAGS = $(EXTRA_LDFLAGS) $(OPENFSTLDFLAGS)
+LDLIBS = $(EXTRA_LDLIBS) $(OPENFSTLIBS) $(OPENBLASLIBS) -lm -ldl
+
+ifneq ($(ARCH), WASM)
+  CXXFLAGS += -pthread
+  LDLIBS += -lpthread
+  LDFLAGS += -rdynamic
+else 
+  CXXFLAGS += -DKALDI_WASM
+endif

@@ -1,6 +1,7 @@
 // util/kaldi-table-test.cc
 
 // Copyright 2009-2011  Microsoft Corporation
+//           2020       Mobvoi AI Lab, Beijing, China (author: Fangjun Kuang)
 
 // See ../../COPYING for clarification regarding multiple authors
 //
@@ -22,6 +23,8 @@
 #include "util/kaldi-table.h"
 #include "util/kaldi-holder.h"
 #include "util/table-types.h"
+
+#include <random>
 
 namespace kaldi {
 
@@ -90,20 +93,20 @@ void UnitTestReadScriptFile() {
 
 void UnitTestClassifyWspecifier() {
   {
-    std::string a = "b,ark:foo|";
+    std::string a = "b,ark:|foo";
     std::string ark = "x", scp = "y";
     WspecifierOptions opts;
     WspecifierType ans = ClassifyWspecifier(a, &ark, &scp, &opts);
-    KALDI_ASSERT(ans == kArchiveWspecifier && ark == "foo|" && scp == "" &&
+    KALDI_ASSERT(ans == kArchiveWspecifier && ark == "|foo" && scp == "" &&
                  opts.binary == true);
   }
 
   {
-    std::string a = "t,ark:foo|";
+    std::string a = "t,ark:|foo";
     std::string ark = "x", scp = "y";
     WspecifierOptions opts;
     WspecifierType ans = ClassifyWspecifier(a, &ark, &scp, &opts);
-    KALDI_ASSERT(ans == kArchiveWspecifier && ark == "foo|" && scp == "" &&
+    KALDI_ASSERT(ans == kArchiveWspecifier && ark == "|foo" && scp == "" &&
                  opts.binary == false);
   }
 
@@ -130,12 +133,6 @@ void UnitTestClassifyWspecifier() {
     std::string ark = "x", scp = "y";
     WspecifierOptions opts;
     WspecifierType ans = ClassifyWspecifier(a, &ark, &scp, &opts);
-    KALDI_ASSERT(ans == kNoWspecifier);
-  }
-
-  {
-    std::string a = " t,ark:boo";
-    WspecifierType ans = ClassifyWspecifier(a, NULL, NULL, NULL);
     KALDI_ASSERT(ans == kNoWspecifier);
   }
 
@@ -354,7 +351,8 @@ void UnitTestTableSequentialInt32(bool binary) {
     k2.push_back(sbr.Key());
     v2.push_back(sbr.Value());
   }
-  KALDI_ASSERT(sbr.Close());
+  ans = sbr.Close();
+  KALDI_ASSERT(ans);
   KALDI_ASSERT(k2 == k);
   KALDI_ASSERT(v2 == v);
 }
@@ -387,7 +385,8 @@ void UnitTestTableSequentialBool(bool binary) {
     k2.push_back(sbr.Key());
     v2.push_back(sbr.Value());
   }
-  KALDI_ASSERT(sbr.Close());
+  ans = sbr.Close();
+  KALDI_ASSERT(ans);
   KALDI_ASSERT(k2 == k);
   KALDI_ASSERT(v2 == v);
 }
@@ -421,7 +420,8 @@ void UnitTestTableSequentialDouble(bool binary) {
     k2.push_back(sbr.Key());
     v2.push_back(sbr.Value());
   }
-  KALDI_ASSERT(sbr.Close());
+  ans = sbr.Close();
+  KALDI_ASSERT(ans);
   KALDI_ASSERT(k2 == k);
   if (binary) {
     KALDI_ASSERT(v2 == v);
@@ -465,7 +465,8 @@ void UnitTestTableSequentialDoubleBoth(bool binary, bool read_scp) {
     k2.push_back(sbr.Key());
     v2.push_back(sbr.Value());
   }
-  KALDI_ASSERT(sbr.Close());
+  ans = sbr.Close();
+  KALDI_ASSERT(ans);
   KALDI_ASSERT(k2 == k);
   if (binary) {
     KALDI_ASSERT(v2 == v);
@@ -514,7 +515,8 @@ void UnitTestTableSequentialInt32VectorBoth(bool binary, bool read_scp) {
     k2.push_back(sbr.Key());
     v2.push_back(sbr.Value());
   }
-  KALDI_ASSERT(sbr.Close());
+  ans = sbr.Close();
+  KALDI_ASSERT(ans);
   KALDI_ASSERT(k2 == k);
   KALDI_ASSERT(v2 == v);
 }
@@ -554,7 +556,8 @@ void UnitTestTableSequentialInt32PairVectorBoth(bool binary, bool read_scp) {
     k2.push_back(sbr.Key());
     v2.push_back(sbr.Value());
   }
-  KALDI_ASSERT(sbr.Close());
+  ans = sbr.Close();
+  KALDI_ASSERT(ans);
   KALDI_ASSERT(k2 == k);
   KALDI_ASSERT(v2 == v);
 }
@@ -597,7 +600,8 @@ void UnitTestTableSequentialInt32VectorVectorBoth(bool binary, bool read_scp) {
     k2.push_back(sbr.Key());
     v2.push_back(sbr.Value());
   }
-  KALDI_ASSERT(sbr.Close());
+  ans = sbr.Close();
+  KALDI_ASSERT(ans);
   KALDI_ASSERT(k2 == k);
   KALDI_ASSERT(v2 == v);
 }
@@ -644,7 +648,8 @@ void UnitTestTableSequentialInt32Script(bool binary) {
     k2.push_back(sbr.Key());
     v2.push_back(sbr.Value());
   }
-  KALDI_ASSERT(sbr.Close());
+  ans = sbr.Close();
+  KALDI_ASSERT(ans);
 
   unlink("tmp.scp");
   for (size_t i = 0; i < script.size(); i++) {
@@ -687,7 +692,8 @@ void UnitTestTableSequentialDoubleMatrixBoth(bool binary, bool read_scp) {
     k2.push_back(sbr.Key());
     v2.push_back(new Matrix<double>(sbr.Value()));
   }
-  KALDI_ASSERT(sbr.Close());
+  ans = sbr.Close();
+  KALDI_ASSERT(ans);
   KALDI_ASSERT(k2 == k);
   if (binary) {
     for (size_t i = 0; i < v2.size(); i++)
@@ -741,7 +747,8 @@ void UnitTestTableSequentialBaseFloatVectorBoth(bool binary, bool read_scp) {
     k2.push_back(sbr.Key());
     v2.push_back(new Vector<BaseFloat>(sbr.Value()));
   }
-  KALDI_ASSERT(sbr.Close());
+  ans = sbr.Close();
+  KALDI_ASSERT(ans);
   KALDI_ASSERT(k2 == k);
   if (binary) {
     for (size_t i = 0; i < v2.size(); i++)
@@ -834,10 +841,11 @@ void UnitTestTableRandomBothDouble(bool binary, bool read_scp,
         bool ans = sbr.HasKey(cur_key);
         KALDI_ASSERT(ans == true);
       }
+      auto v2 = sbr.Value(cur_key);
       if (binary) {
-        KALDI_ASSERT(value == sbr.Value(cur_key));
+        KALDI_ASSERT(value == v2);
       } else {
-        KALDI_ASSERT(ApproxEqual(value, sbr.Value(cur_key)));
+        KALDI_ASSERT(ApproxEqual(value, v2));
       }
     }
   }
@@ -846,6 +854,9 @@ void UnitTestTableRandomBothDouble(bool binary, bool read_scp,
 
 
 void UnitTestRangesMatrix(bool binary) {
+  std::random_device rd;
+  std::mt19937 g(rd());
+
   int32 archive_size = RandInt(1, 10);
   std::vector<std::pair<std::string, Matrix<BaseFloat> > > archive_contents(
       archive_size);
@@ -859,7 +870,7 @@ void UnitTestRangesMatrix(bool binary) {
     archive_contents[i].second.SetRandn();
   }
   if (RandInt(0, 1) == 0)
-    std::random_shuffle(archive_contents.begin(), archive_contents.end());
+    std::shuffle(archive_contents.begin(), archive_contents.end(), g);
 
   std::ostringstream writer_name;
   writer_name << "ark,scp";
@@ -1039,10 +1050,11 @@ void UnitTestTableRandomBothDoubleMatrix(bool binary, bool read_scp,
         bool ans = sbr.HasKey(cur_key);
         KALDI_ASSERT(ans == true);
       }
+      auto v2 = sbr.Value(cur_key);
       if (binary) {
-        KALDI_ASSERT(value_ptr->ApproxEqual(sbr.Value(cur_key), 1.0e-10));
+        KALDI_ASSERT(value_ptr->ApproxEqual(v2, 1.0e-10));
       } else {
-        KALDI_ASSERT(value_ptr->ApproxEqual(sbr.Value(cur_key), 0.01));
+        KALDI_ASSERT(value_ptr->ApproxEqual(v2, 0.01));
       }
     }
   }
@@ -1050,9 +1062,86 @@ void UnitTestTableRandomBothDoubleMatrix(bool binary, bool read_scp,
   unlink("tmpf.scp");
 }
 
+void UnitTestTableNumpyArray() {
+  const char* wspecifier = "ark,scp:numpy_array.ark,numpy_array.scp";
+
+  const char* key1 = "key1";
+  const char* key2 = "key2";
+
+  Vector<BaseFloat> v(2);
+  v(0) = 1;
+  v(1) = 2;
+
+  Matrix<BaseFloat> m(1, 3);
+  m(0, 0) = 10;
+  m(0, 1) = 20;
+  m(0, 2) = 30;
+
+  BaseFloatNumpyArrayWriter writer(wspecifier);
+
+  writer.Write(key1, NumpyArray<BaseFloat>(v));
+  writer.Write(key2, NumpyArray<BaseFloat>(m));
+  writer.Close();
+  Sleep(200e-6);
+
+  const char* rspecifier = "scp:numpy_array.scp";
+  {
+    SequentialBaseFloatNumpyArrayReader reader(rspecifier);
+    for(; !reader.Done(); reader.Next()) {
+      auto key = reader.Key();
+      auto& value = reader.Value();
+      if (key == key1) {
+        KALDI_ASSERT(value.NumElements() == 2);
+        KALDI_ASSERT(value.Shape().size() == 1);
+        KALDI_ASSERT(value.Shape()[0] ==  2);
+        KALDI_ASSERT(value[0] == 1);
+        KALDI_ASSERT(value[1] == 2);
+      } else if (key == key2) {
+        KALDI_ASSERT(value.NumElements() == 3);
+        KALDI_ASSERT(value.Shape().size() == 2);
+        KALDI_ASSERT(value.Shape()[0] == 1);
+        KALDI_ASSERT(value.Shape()[1] == 3);
+        KALDI_ASSERT(value[0] == 10);
+        KALDI_ASSERT(value[1] == 20);
+        KALDI_ASSERT(value[2] == 30);
+      } else {
+        KALDI_ERR << "Unexpected key: " << key;
+      }
+    }
+    reader.Close();
+  }
+
+  {
+    RandomAccessBaseFloatNumpyArrayReader reader(rspecifier);
+    {
+      KALDI_ASSERT(reader.HasKey(key1));
+      auto& value = reader.Value(key1);
+      KALDI_ASSERT(value.NumElements() == 2);
+      KALDI_ASSERT(value.Shape().size() == 1);
+      KALDI_ASSERT(value.Shape()[0] ==  2);
+      KALDI_ASSERT(value[0] == 1);
+      KALDI_ASSERT(value[1] == 2);
+    }
+    {
+      KALDI_ASSERT(reader.HasKey(key2));
+      auto& value = reader.Value(key2);
+      KALDI_ASSERT(value.NumElements() == 3);
+      KALDI_ASSERT(value.Shape().size() == 2);
+      KALDI_ASSERT(value.Shape()[0] == 1);
+      KALDI_ASSERT(value.Shape()[1] == 3);
+      KALDI_ASSERT(value[0] == 10);
+      KALDI_ASSERT(value[1] == 20);
+      KALDI_ASSERT(value[2] == 30);
+    }
+    reader.Close();
+  }
+
+  unlink("numpy_array.scp");
+  unlink("numpy_array.ark");
+}
 
 
-}  // end namespace kaldi.
+}  // namespace kaldi
 
 int main() {
   using namespace kaldi;
@@ -1087,6 +1176,7 @@ int main() {
       }
     }
   }
+  UnitTestTableNumpyArray();
   std::cout << "Test OK.\n";
   return 0;
 }

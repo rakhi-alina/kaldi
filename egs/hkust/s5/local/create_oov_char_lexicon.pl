@@ -25,15 +25,17 @@ if($#ARGV != 1) {
   exit;
 }
 
-use encoding utf8;
+use utf8;
 my %prons;
 open(DICT, $ARGV[0]) || die("Can't open dict ".$ARGV[0]."\n");
+binmode(DICT,":encoding(utf8)");
 foreach (<DICT>) {
   chomp; @A = split(" ", $_); $prons{$A[0]} = $A[1];
 }
 close DICT;
 
 open(WORDS, $ARGV[1]) || die("Can't open oov word list ".$ARGV[1]."\n");
+binmode(WORDS,":encoding(utf8)");
 while (<WORDS>) {
   chomp;
   print $_;

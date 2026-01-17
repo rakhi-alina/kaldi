@@ -23,9 +23,12 @@
 #include "util/kaldi-io.h"
 #include "base/kaldi-math.h"
 
+#include "fstext/openfst_compat.h"
+
 namespace fst
 {
-
+using std::vector;
+using std::cout;
 
 // GenAcceptorFromSequence generates a linear acceptor (identical input+output symbols) that has this
 // sequence of symbols, and
@@ -195,7 +198,7 @@ static void TestContextFst(bool verbose, bool use_matcher) {
       std::cout << "Sequence FST is:\n";
       {  // Try to print the fst.
         FstPrinter<Arc> fstprinter(*f, NULL, NULL, NULL, false, true, "\t");
-        fstprinter.Print(&std::cout, "standard output");
+        printer_print(std::cout, fstprinter, "standard output");
       }
     }
 
@@ -223,7 +226,7 @@ static void TestContextFst(bool verbose, bool use_matcher) {
       std::cout << "Composed FST is:\n";
       {  // Try to print the fst.
         FstPrinter<Arc> fstprinter(fst_composed, NULL, NULL, NULL, false, true, "\t");
-        fstprinter.Print(&std::cout, "standard output");
+        printer_print(std::cout, fstprinter, "standard output");
       }
     }
 

@@ -66,7 +66,7 @@ RandomState::RandomState() {
   // without calling rand() in between, they would give you the same sequence
   // offset by one (if we didn't have the "+ 27437" in the code).  27437 is just
   // a randomly chosen prime number.
-  seed = Rand() + 27437;
+  seed = unsigned(Rand()) + 27437;
 }
 
 bool WithProb(BaseFloat prob, struct RandomState* state) {
@@ -121,7 +121,7 @@ int32 RandInt(int32 min_val, int32 max_val, struct RandomState* state) {
 }
 
 // Returns poisson-distributed random number.
-// Take care: this takes time proportinal
+// Take care: this takes time proportional
 // to lambda.  Faster algorithms exist but are more complex.
 int32 RandPoisson(float lambda, struct RandomState* state) {
   // Knuth's algorithm.

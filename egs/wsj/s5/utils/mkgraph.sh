@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Copyright 2010-2012 Microsoft Corporation
 #           2012-2013 Johns Hopkins University (Author: Daniel Povey)
 # Apache 2.0
@@ -6,8 +6,8 @@
 # This script creates a fully expanded decoding graph (HCLG) that represents
 # all the language-model, pronunciation dictionary (lexicon), context-dependency,
 # and HMM structure in our model.  The output is a Finite State Transducer
-# that has word-ids on the output, and pdf-ids on the input (these are indexes
-# that resolve to Gaussian Mixture Models).
+# that has word-ids on the output, and transition-ids on the input (these are indexes
+# that resolve to pdf-ids).
 # See
 #  http://kaldi-asr.org/doc/graph_recipe_test.html
 # (this is compiled from this repository using Doxygen,
@@ -50,11 +50,10 @@ dir=$3
 
 mkdir -p $dir
 
-# If $lang/tmp/LG.fst does not exist or is older than its sources, make it...
 # (note: the [[ ]] brackets make the || type operators work (inside [ ], we
 # would have to use -o instead),  -f means file exists, and -ot means older than).
 
-required="$lang/L.fst $lang/G.fst $lang/phones.txt $lang/words.txt $lang/phones/silence.csl $lang/phones/disambig.int $model $tree"
+required="$lang/L_disambig.fst $lang/G.fst $lang/phones.txt $lang/words.txt $lang/phones/silence.csl $lang/phones/disambig.int $model $tree"
 for f in $required; do
   [ ! -f $f ] && echo "mkgraph.sh: expected $f to exist" && exit 1;
 done
@@ -93,6 +92,8 @@ fi
 
 mkdir -p $lang/tmp
 trap "rm -f $lang/tmp/LG.fst.$$" EXIT HUP INT PIPE TERM
+
+# If $lang/tmp/LG.fst does not exist or is older than its sources, make it...
 # Note: [[ ]] is like [ ] but enables certain extra constructs, e.g. || in
 # place of -o
 if [[ ! -s $lang/tmp/LG.fst || $lang/tmp/LG.fst -ot $lang/G.fst || \

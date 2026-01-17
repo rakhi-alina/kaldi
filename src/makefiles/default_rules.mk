@@ -1,14 +1,27 @@
-
 SHELL := /bin/bash
 
 ifeq ($(KALDI_FLAVOR), dynamic)
   ifeq ($(shell uname), Darwin)
-    ifdef LIBNAME
-      LIBFILE = lib$(LIBNAME).dylib
+    ifdef ANDROIDINC # cross-compiling enabled on host MacOS
+      ifdef LIBNAME
+        LIBFILE = lib$(LIBNAME).so
+      endif
+      LDFLAGS += -Wl,-rpath -Wl,$(KALDILIBDIR)
+      EXTRA_LDLIBS += $(foreach dep,$(ADDLIBS), $(dir $(dep))$(notdir $(basename $(dep))).a)
+    else
+      ifdef LIBNAME
+        LIBFILE = lib$(LIBNAME).dylib
+      endif
+      LDFLAGS += -Wl,-rpath -Wl,$(KALDILIBDIR)
+      EXTRA_LDLIBS += $(foreach dep,$(ADDLIBS), $(dir $(dep))lib$(notdir $(basename $(dep))).dylib)
     endif
-    LDFLAGS += -Wl,-rpath -Wl,$(KALDILIBDIR)
-    EXTRA_LDLIBS += $(foreach dep,$(ADDLIBS), $(dir $(dep))lib$(notdir $(basename $(dep))).dylib)
   else ifeq ($(shell uname), Linux)
+    ifdef LIBNAME
+      LIBFILE = lib$(LIBNAME).so
+    endif
+    LDFLAGS += -Wl,-rpath=$(shell readlink -f $(KALDILIBDIR))
+    EXTRA_LDLIBS += $(foreach dep,$(ADDLIBS), $(dir $(dep))lib$(notdir $(basename $(dep))).so)
+  else ifeq ($(shell uname), FreeBSD)
     ifdef LIBNAME
       LIBFILE = lib$(LIBNAME).so
     endif
@@ -42,7 +55,11 @@ $(LIBFILE): $(LIBNAME).a
 	ln -sf $(shell pwd)/$@ $(KALDILIBDIR)/$@
   else ifeq ($(shell uname), Linux)
         # Building shared library from static (static was compiled with -fPIC)
-	$(CXX) -shared -o $@ -Wl,--no-undefined -Wl,--as-needed  -Wl,-soname=$@,--whole-archive $(LIBNAME).a -Wl,--no-whole-archive $(LDFLAGS) $(LDLIBS)
+	$(CXX) -shared -o $@ -Wl,--as-needed  -Wl,-soname=$@,--whole-archive $(LIBNAME).a -Wl,--no-whole-archive $(LDFLAGS) $(LDLIBS)
+	ln -sf $(shell pwd)/$@ $(KALDILIBDIR)/$@
+  else ifeq ($(shell uname), FreeBSD)
+        # Building shared library from static (static was compiled with -fPIC)
+	$(CXX) -shared -o $@ -Wl,--as-needed  -Wl,-soname=$@,--whole-archive $(LIBNAME).a -Wl,--no-whole-archive $(LDFLAGS) $(LDLIBS)
 	ln -sf $(shell pwd)/$@ $(KALDILIBDIR)/$@
   else  # Platform not supported
 	$(error Dynamic libraries not supported on this platform. Run configure with --static flag.)
@@ -74,7 +91,7 @@ endif
 	$(MAKE) -C ${@D} ${@F}
 
 clean:
-	-rm -f *.o *.a *.so $(TESTFILES) $(BINFILES) $(TESTOUTPUTS) tmp* *.tmp *.testlog
+	-rm -f *.o *.a *.so *.dylib $(OBJFILES) $(TESTFILES) $(BINFILES) $(TESTOUTPUTS) tmp* *.tmp *.testlog
 
 distclean: clean
 	-rm -f .depend.mk
@@ -121,29 +138,37 @@ valgrind: .valgrind
 	rm valgrind.out
 	touch .valgrind
 
-
-#buid up dependency commands
+# Build up dependency commands.
 CC_SRCS=$(wildcard *.cc)
-#check if files exist to run dependency commands on
+# Check if any .cc sources exist to run dependency commands on.
 ifneq ($(CC_SRCS),)
 CC_DEP_COMMAND=$(CXX) -M $(CXXFLAGS) $(CC_SRCS)
 endif
 
-ifeq ($(CUDA), true)
+ifeq ($(IS_GPU_BUILD), true)
 CUDA_SRCS=$(wildcard *.cu)
-#check if files exist to run dependency commands on
+# Check if any CUDA .cu sources exist to run dependency commands on.
 ifneq ($(CUDA_SRCS),)
+ifeq ($(CUDA), true)
 NVCC_DEP_COMMAND = $(CUDATKDIR)/bin/nvcc -M $(CUDA_FLAGS) $(CUDA_INCLUDE) $(CUDA_SRCS)
+endif
+ifeq ($(ROCM), true)
+HIPCC_DEP_COMMAND = $(HIPCC) -M $(ROCM_FLAGS) $(ROCM_INCLUDE) $(CUDA_SRCS)
+endif
 endif
 endif
 
+.PHONY: depend
 depend:
 	rm -f .depend.mk
 ifneq ($(CC_DEP_COMMAND),)
-	$(CC_DEP_COMMAND) >> .depend.mk
+	-$(CC_DEP_COMMAND) >> .depend.mk
 endif
 ifneq ($(NVCC_DEP_COMMAND),)
-	$(NVCC_DEP_COMMAND) >> .depend.mk
+	-$(NVCC_DEP_COMMAND) >> .depend.mk
+endif
+ifneq ($(HIPCC_DEP_COMMAND),)
+	-$(HIPCC_DEP_COMMAND) >> .depend.mk
 endif
 
 # removing automatic making of "depend" as it's quite slow.

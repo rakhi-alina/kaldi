@@ -24,7 +24,7 @@
 
 namespace kaldi {
 
-typedef kaldi::int32 int32;
+typedef int32 int32;
 
 OnlineTcpVectorSource::OnlineTcpVectorSource(int32 socket)
     : socket_desc(socket),
@@ -140,6 +140,7 @@ bool OnlineTcpVectorSource::Read(Vector<BaseFloat> *data) {
   int32 n_read = b_read / 2;
 
   short* s_frame = (short*) frame;
+  data->Resize(n_read);
   for (int32 i = 0; i < n_read; i++)
     (*data)(i) = s_frame[i];
 

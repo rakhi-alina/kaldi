@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 CXX=${CXX:-g++}
+CXXFLAGS=${CXXFLAGS}
 status=0
 
 # at some point we could try to add packages for Cywgin or macports(?) to this
@@ -25,12 +26,12 @@ case $compiler_ver_info in
     add_packages gcc-c++ g++
     status=1
     ;;
-  "g++ "* )
+  *"c++ "* | "g++ "* )
     gcc_ver=$($CXX -dumpversion)
     gcc_ver_num=$(echo $gcc_ver | sed 's/\./ /g' | xargs printf "%d%02d%02d")
     if [ $gcc_ver_num -lt 40803 ]; then
         echo "$0: Compiler '$CXX' (g++-$gcc_ver) is not supported."
-        echo "$0: You need g++ >= 4.8.3, Apple clang >= 5.0 or LLVM clang >= 3.3."
+        echo "$0: You need g++ >= 4.9.1, Apple clang >= 5.0 or LLVM clang >= 3.3."
         status=1
     fi
     ;;
@@ -44,7 +45,7 @@ case $compiler_ver_info in
         status=1
     fi
     ;;
-  "clang "* )
+  "clang "* | "Apple clang "* )
     clang_ver=$(echo $compiler_ver_info | grep version | sed "s/.*version \([0-9\.]*\).*/\1/")
     clang_ver_num=$(echo $clang_ver | sed 's/\./ /g' | xargs printf "%d%02d")
     if [ $clang_ver_num -lt 303 ]; then
@@ -59,7 +60,7 @@ case $compiler_ver_info in
 esac
 
 # Cannot check this without a compiler.
-if have "$CXX" && ! echo "#include <zlib.h>" | $CXX -E - >&/dev/null; then
+if have "$CXX" && ! echo "#include <zlib.h>" | $CXX $CXXFLAGS -E - &>/dev/null; then
   echo "$0: zlib is not installed."
   add_packages zlib-devel zlib1g-dev
 fi
@@ -71,14 +72,14 @@ for f in make automake autoconf patch grep bzip2 gzip unzip wget git sox; do
   fi
 done
 
+if ! have gfortran; then
+  echo "$0: gfortran is not installed"
+  add_packages gcc-gfortran gfortran
+fi
+
 if ! have libtoolize && ! have glibtoolize; then
   echo "$0: neither libtoolize nor glibtoolize is installed"
   add_packages libtool
-fi
-
-if ! have svn; then
-  echo "$0: subversion is not installed"
-  add_packages subversion
 fi
 
 if ! have awk; then
@@ -86,69 +87,93 @@ if ! have awk; then
   add_packages gawk
 fi
 
-pythonok=true
+pythonok=false
+python3=false
+python27=false
+
+
 if ! have python2.7; then
   echo "$0: python2.7 is not installed"
-  add_packages python2.7
-  pythonok=false
+else
+  echo "$0: python2.7 present"
+  python27=true
+  pythonok=true
 fi
 
 if ! have python3; then
   echo "$0: python3 is not installed"
   add_packages python3
-  pythonok=false
+else
+  echo "$0: python3 present"
+  python3=true
+  pythonok=true
 fi
 
 (
 #Use a subshell so that sourcing env.sh does not have an influence on the rest of the script
 [ -f ./env.sh ] && . ./env.sh
-if $pythonok && ! have python2; then
-  mkdir -p $PWD/python
-  echo "$0: python2.7 is installed, but the python2 binary does not exist." \
-       "Creating a symlink and adding this to tools/env.sh"
-  ln -s $(command -v python2.7) $PWD/python/python2
-  echo "export PATH=$PWD/python:\${PATH}" >> env.sh
-fi
-
-if [[ -f $PWD/python/.use_default_python && -f $PWD/python/python ]]; then
-  rm $PWD/python/python
-fi
-
-if $pythonok && have python && [[ ! -f $PWD/python/.use_default_python ]]; then
-  version=$(python 2>&1 --version | awk '{print $2}')
-  if [[ $version != "2.7"* ]] ; then
-    echo "$0: WARNING python 2.7 is not the default python. We fixed this by" \
-         "adding a correct symlink more prominently on the path."
-    echo " ... If you really want to use python $version as default, add an" \
+rm -f $PWD/python/python*
+if ! [ -f $PWD/python/.use_default_python ]; then
+  echo "$0: Configuring python"
+  echo "$0: ... If you really want to avoid this, add an" \
          "empty file $PWD/python/.use_default_python and run this script again."
-    mkdir -p $PWD/python
+  if $python27 ; then
+    echo "$0: ... python2.7 found, making it default (python, python2, python2.7)"
     ln -s $(command -v python2.7) $PWD/python/python
-    echo "export PATH=$PWD/python:\${PATH}" >> env.sh
+    ln -s $(command -v python2.7) $PWD/python/python2
+    ln -s $(command -v python2.7) $PWD/python/python2.7
+  fi
+
+  if $python3 ; then
+    echo "$0: ... python3 found, making symlink (python3)"
+    ln -s $(command -v python3) $PWD/python/python3
+    if ! $python27 ; then
+      echo "$0: ... ... python2.7 not found, using python3 as python"
+      ln -s $(command -v python3) $PWD/python/python
+    fi
+  fi
+else
+  echo "$0: Not configuring python(s) -- using system defaults"
+  if ! have python ; then
+    echo "$0: WARNING: 'python' executable not present, configuring"
+    if $python27 ; then
+      ln -s $(command -v python2.7) $PWD/python/python
+    elif $python3 ; then
+      ln -s $(command -v python3) $PWD/python/python
+    fi
   fi
 fi
+
 )
 
 mathlib_missing=false
-case $(uname -m) in
-  x86_64)  # Suggest MKL on an Intel64 system (configure does not like i?86 hosts).
-    # We do not know if compiler exists at this point, so double-check the
-    # well-known mkl.h file location. The compiler test would still find it if
-    # installed in an alternative location (this is unlikely).
-    if [ ! -f /opt/intel/mkl/include/mkl.h ] &&
-         ! echo '#include <mkl.h>' | $CXX -I /opt/intel/mkl/include -E - >&/dev/null; then
-      if [[ $(uname) == Linux ]]; then
-        echo "$0: Intel MKL is not installed. Run extras/install_mkl.sh to install it."
+case "$(uname -m)-$(uname -s)" in
+  x86_64*)  # Suggest MKL on an Intel64 system (not supported on i?86 hosts).
+    # Respect user-supplied MKL_ROOT environment variable.
+    MKL_ROOT="${MKL_ROOT:-/opt/intel/mkl}"
+       # Check the well-known mkl.h file location.
+    if ! [[ -f "${MKL_ROOT}/include/mkl.h" ]] &&
+       # Ubuntu 20+ has an MKL package
+       ! pkg-config mkl-dynamic-lp64-seq --exists &>/dev/null; then
+      echo "$0: Intel MKL does not seem to be installed."
+      if [[ $(uname) = Linux ]]; then
+        echo $' ... Run extras/install_mkl.sh to install it. Some distros' \
+             $'(e.g., Ubuntu 20.04) provide\n ... a version of MKL via'    \
+             $'the package manager, but verify that it is up-to-date.'
       else
-        echo "$0: Intel MKL is not installed. Download the installer package for your
- ... system from: https://software.intel.com/mkl/choose-download."
+        echo $' ... Download the installer package for your system from:'  \
+             $'\n ...   https://software.intel.com/mkl/choose-download'
       fi
       mathlib_missing=true
     fi
       ;;
+  arm64-Darwin)  ## Apple Silicon
+    echo "$0: Relying on Acceleration framework"
+    ;;
   *)  # Suggest OpenBLAS on other hardware.
     if [ ! -f $(pwd)/OpenBLAS/install/include/openblas_config.h ] &&
          ! echo '#include <openblas_config.h>' |
-            $CXX -I $(pwd)/OpenBLAS/install/include -E - >&/dev/null; then
+            $CXX -I $(pwd)/OpenBLAS/install/include -E - &>/dev/null; then
       echo "$0: OpenBLAS not detected. Run extras/install_openblas.sh
  ... to compile it for your platform, or configure with --openblas-root= if you
  ... have it installed in a location we could not guess. Note that packaged
@@ -173,7 +198,7 @@ if [ -n "$debian_packages" ]; then
       # The case '(pattern)' syntax is necessary in subshell for bash 3.x.
       case $rune in
         (rhel|centos|redhat) echo "yum install $redhat_packages"; break;;
-        (fedora) echo "dnx install $redhat_packages"; break;;
+        (fedora) echo "dnf install $redhat_packages"; break;;
         (suse) echo "zypper install $opensuse_packages"; break;;
         (debian) echo "apt-get install $debian_packages"; break;;
       esac

@@ -1257,6 +1257,13 @@ void GetRandomAlignmentForPhone(const ContextDependencyInterface &ctx_dep,
   delete fst;
 }
 
+
+// To keep the code stable, we just leave a comment here.
+// Be careful, the variable "start_is_self_loop" should be 
+// "start_is_not_self_loop", to be exact.
+// This code might be implemented in a complicated way. Actually, we just need
+// to find the head and tail positions of each transition-state on the
+// alignment, and then swap them.
 void ChangeReorderingOfAlignment(const TransitionModel &trans_model,
                                  std::vector<int32> *alignment) {
   int32 start_pos = 0, size = alignment->size();
@@ -1289,5 +1296,16 @@ void ChangeReorderingOfAlignment(const TransitionModel &trans_model,
   }
 }
 
+void GetPdfToPhonesMap(const TransitionModel &trans_model,
+                       std::vector<std::set<int32> > *pdf2phones) {
+  pdf2phones->clear();
+  pdf2phones->resize(trans_model.NumPdfs());
+  for (int32 i = 0; i < trans_model.NumTransitionIds(); i++) {
+    int32 trans_id = i + 1;
+    int32 pdf_id = trans_model.TransitionIdToPdf(trans_id);
+    int32 phone = trans_model.TransitionIdToPhone(trans_id);
+    (*pdf2phones)[pdf_id].insert(phone);
+  }
+}
 
 } // namespace kaldi

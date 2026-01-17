@@ -23,15 +23,15 @@
 #ifndef KALDI_DECODER_LATTICE_FASTER_DECODER_H_
 #define KALDI_DECODER_LATTICE_FASTER_DECODER_H_
 
-
-#include "util/stl-utils.h"
-#include "util/hash-list.h"
+#include "decoder/grammar-fst.h"
 #include "fst/fstlib.h"
-#include "itf/decodable-itf.h"
+#include "fst/memory.h"
 #include "fstext/fstext-lib.h"
+#include "itf/decodable-itf.h"
 #include "lat/determinize-lattice-pruned.h"
 #include "lat/kaldi-lattice.h"
-#include "decoder/grammar-fst.h"
+#include "util/hash-list.h"
+#include "util/stl-utils.h"
 
 namespace kaldi {
 
@@ -43,25 +43,35 @@ struct LatticeFasterDecoderConfig {
   int32 prune_interval;
   bool determinize_lattice; // not inspected by this class... used in
                             // command-line program.
-  BaseFloat beam_delta; // has nothing to do with beam_ratio
+  BaseFloat beam_delta;
   BaseFloat hash_ratio;
-  BaseFloat prune_scale;   // Note: we don't make this configurable on the command line,
-                           // it's not a very important parameter.  It affects the
-                           // algorithm that prunes the tokens as we go.
+  // Note: we don't make prune_scale configurable on the command line, it's not
+  // a very important parameter.  It affects the algorithm that prunes the
+  // tokens as we go.
+  BaseFloat prune_scale;
+
+  // Number of elements in the block for Token and ForwardLink memory
+  // pool allocation.
+  int32 memory_pool_tokens_block_size;
+  int32 memory_pool_links_block_size;
+
   // Most of the options inside det_opts are not actually queried by the
   // LatticeFasterDecoder class itself, but by the code that calls it, for
   // example in the function DecodeUtteranceLatticeFaster.
   fst::DeterminizeLatticePhonePrunedOptions det_opts;
 
-  LatticeFasterDecoderConfig(): beam(16.0),
-                                max_active(std::numeric_limits<int32>::max()),
-                                min_active(200),
-                                lattice_beam(10.0),
-                                prune_interval(25),
-                                determinize_lattice(true),
-                                beam_delta(0.5),
-                                hash_ratio(2.0),
-                                prune_scale(0.1) { }
+  LatticeFasterDecoderConfig()
+      : beam(16.0),
+        max_active(std::numeric_limits<int32>::max()),
+        min_active(200),
+        lattice_beam(10.0),
+        prune_interval(25),
+        determinize_lattice(true),
+        beam_delta(0.5),
+        hash_ratio(2.0),
+        prune_scale(0.1),
+        memory_pool_tokens_block_size(1 << 8),
+        memory_pool_links_block_size(1 << 8) {}
   void Register(OptionsItf *opts) {
     det_opts.Register(opts);
     opts->Register("beam", &beam, "Decoding beam.  Larger->slower, more accurate.");
@@ -80,6 +90,12 @@ struct LatticeFasterDecoderConfig {
                    "max-active constraint is applied.  Larger is more accurate.");
     opts->Register("hash-ratio", &hash_ratio, "Setting used in decoder to "
                    "control hash behavior");
+    opts->Register("memory-pool-tokens-block-size", &memory_pool_tokens_block_size,
+                   "Memory pool block size suggestion for storing tokens (in elements). "
+                   "Smaller uses less memory but increases cache misses.");
+    opts->Register("memory-pool-links-block-size", &memory_pool_links_block_size,
+                   "Memory pool block size suggestion for storing links (in elements). "
+                   "Smaller uses less memory but increases cache misses.");
   }
   void Check() const {
     KALDI_ASSERT(beam > 0.0 && max_active > 1 && lattice_beam > 0.0
@@ -216,7 +232,7 @@ struct BackpointerToken {
    will normally be StdToken, but also may be BackpointerToken which is to support
    quick lookup of the current best path (see lattice-faster-online-decoder.h)
 
-   The FST you invoke this decoder with is expected to equal
+   The FST you invoke this decoder which is expected to equal
    Fst::Fst<fst::StdArc>, a.k.a. StdFst, or GrammarFst.  If you invoke it with
    FST == StdFst and it notices that the actual FST type is
    fst::VectorFst<fst::StdArc> or fst::ConstFst<fst::StdArc>, the decoder object
@@ -316,15 +332,10 @@ class LatticeFasterDecoderTpl {
   /// This function may be optionally called after AdvanceDecoding(), when you
   /// do not plan to decode any further.  It does an extra pruning step that
   /// will help to prune the lattices output by GetLattice and (particularly)
-  /// GetRawLattice more accurately, particularly toward the end of the
-  /// utterance.  It does this by using the final-probs in pruning (if any
-  /// final-state survived); it also does a final pruning step that visits all
-  /// states (the pruning that is done during decoding may fail to prune states
-  /// that are within kPruningScale = 0.1 outside of the beam).  If you call
-  /// this, you cannot call AdvanceDecoding again (it will fail), and you
-  /// cannot call GetLattice() and related functions with use_final_probs =
-  /// false.
-  /// Used to be called PruneActiveTokensFinal().
+  /// GetRawLattice more completely, particularly toward the end of the
+  /// utterance.  If you call this, you cannot call AdvanceDecoding again (it
+  /// will fail), and you cannot call GetLattice() and related functions with
+  /// use_final_probs = false.  Used to be called PruneActiveTokensFinal().
   void FinalizeDecoding();
 
   /// FinalRelativeCost() serves the same purpose as ReachedFinal(), but gives
@@ -348,7 +359,7 @@ class LatticeFasterDecoderTpl {
   // internals.
 
   // Deletes the elements of the singly linked list tok->links.
-  inline static void DeleteForwardLinks(Token *tok);
+  void DeleteForwardLinks(Token *tok);
 
   // head of per-frame list of Tokens (list is in topological order),
   // and something saying whether we ever pruned it using PruneForwardLinks.
@@ -380,9 +391,9 @@ class LatticeFasterDecoderTpl {
   // token was newly created or the cost changed.
   // If Token == StdToken, the 'backpointer' argument has no purpose (and will
   // hopefully be optimized out).
-  inline Token *FindOrAddToken(StateId state, int32 frame_plus_one,
-                               BaseFloat tot_cost, Token *backpointer,
-                               bool *changed);
+  inline Elem *FindOrAddToken(StateId state, int32 frame_plus_one,
+                              BaseFloat tot_cost, Token *backpointer,
+                              bool *changed);
 
   // prunes outgoing links for all tokens in active_toks_[frame]
   // it's called by PruneActiveTokens
@@ -464,7 +475,7 @@ class LatticeFasterDecoderTpl {
   std::vector<TokenList> active_toks_; // Lists of tokens, indexed by
   // frame (members of TokenList are toks, must_prune_forward_links,
   // must_prune_tokens).
-  std::vector<StateId> queue_;  // temp variable used in ProcessNonemitting,
+  std::vector<const Elem* > queue_;  // temp variable used in ProcessNonemitting,
   std::vector<BaseFloat> tmp_array_;  // used in GetCutoff.
 
   // fst_ is a pointer to the FST we are decoding from.
@@ -495,7 +506,14 @@ class LatticeFasterDecoderTpl {
   BaseFloat final_relative_cost_;
   BaseFloat final_best_cost_;
 
-  // There are various cleanup tasks... the the toks_ structure contains
+  // Memory pools for storing tokens and forward links.
+  // We use it to decrease the work put on allocator and to move some of data
+  // together. Too small block sizes will result in more work to allocator but
+  // bigger ones increase the memory usage.
+  fst::MemoryPool<Token> token_pool_;
+  fst::MemoryPool<ForwardLinkT> forward_link_pool_;
+
+  // There are various cleanup tasks... the toks_ structure contains
   // singly linked lists of Token pointers, where Elem is the list type.
   // It also indexes them in a hash, indexed by state (this hash is only
   // maintained for the most recent frame).  toks_.Clear()

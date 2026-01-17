@@ -23,10 +23,11 @@
 #include "fstext/fst-test-utils.h"
 #include "base/kaldi-math.h"
 
+#include "fstext/openfst_compat.h"
 
 namespace fst
 {
-
+using std::vector;
 
 // Don't instantiate with log semiring, as RandEquivalent may fail.
 template<class Arc> static void TestFactor() {
@@ -79,7 +80,7 @@ template<class Arc> static void TestFactor() {
   std::cout <<" printing before trimming\n";
   {
     FstPrinter<Arc> fstprinter(fst, sptr, sptr, NULL, false, true, "\t");
-    fstprinter.Print(&std::cout, "standard output");
+    printer_print(std::cout, fstprinter, "standard output");
   }
   // Trim resulting FST.
   Connect(&fst);
@@ -87,7 +88,7 @@ template<class Arc> static void TestFactor() {
   std::cout <<" printing after trimming\n";
   {
     FstPrinter<Arc> fstprinter(fst, sptr, sptr, NULL, false, true, "\t");
-    fstprinter.Print(&std::cout, "standard output");
+    printer_print(std::cout, fstprinter, "standard output");
   }
 
   if (fst.Start() == kNoStateId) return;  // "Connect" made it empty.

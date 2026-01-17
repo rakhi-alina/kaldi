@@ -1,4 +1,5 @@
 [![Build Status](https://travis-ci.com/kaldi-asr/kaldi.svg?branch=master)](https://travis-ci.com/kaldi-asr/kaldi)
+[![Gitpod Ready-to-Code](https://img.shields.io/badge/Gitpod-Ready--to--Code-blue?logo=gitpod)](https://gitpod.io/#https://github.com/kaldi-asr/kaldi) 
 Kaldi Speech Recognition Toolkit
 ================================
 
@@ -51,6 +52,22 @@ Development pattern for contributors
 Platform specific notes
 -----------------------
 
+### Fedora 41 (and later)
+
+In order to build it on Fedora 41 using the libraries that are provided by the distro, you need to install the development libraries and dependencies with
+
+```
+sudo dnf install lapack-devel openfst-devel
+```
+
+then build the package as follows:
+
+```
+cmake -S ./ -Bbuild/Release -DFETCHCONTENT_FULLY_DISCONNECTED=ON -DBuildForFedora=ON
+cmake --build /home/gerhard/workspace/kaldi/build/Release
+```
+
+
 ### PowerPC 64bits little-endian (ppc64le)
 
 - Kaldi is expected to work out of the box in RHEL >= 7 and Ubuntu >= 16.04 with
@@ -65,3 +82,10 @@ Platform specific notes
   OpenBLAS.
 - See [this blog post](http://jcsilva.github.io/2017/03/18/compile-kaldi-android/)
   for details.
+
+### Web Assembly
+
+- Kaldi supports cross compiling for Web Assembly for in-browser execution
+  using [emscripten](https://emscripten.org) and OpenBLAS
+- See [this repo](https://github.com/msqr1/kaldi-wasm2)
+  for a step-by-step description of the build process.

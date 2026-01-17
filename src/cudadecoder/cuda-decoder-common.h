@@ -17,7 +17,7 @@
 
 #ifndef KALDI_CUDA_DECODER_CUDA_DECODER_UTILS_H_
 #define KALDI_CUDA_DECODER_CUDA_DECODER_UTILS_H_
-#include "cudamatrix/cu-device.h"
+#include "cudamatrix/cu-common.h"
 #include "util/stl-utils.h"
 
 // A decoder channel is linked to one utterance. Frames
@@ -29,8 +29,12 @@
 //
 // An analogy would be lane -> a core, channel -> a software thread
 
-// Number of GPU decoder lanes
-#define KALDI_CUDA_DECODER_MAX_N_LANES 200
+// Some config parameters can be computed using other parameters
+// (e.g. we can set main_q_capacity using max-active)
+// Those values are the different factors between parameters that we know
+// and parameters we want to set
+#define KALDI_CUDA_DECODER_MAX_ACTIVE_MAIN_Q_CAPACITY_FACTOR 4
+#define KALDI_CUDA_DECODER_AUX_Q_MAIN_Q_CAPACITIES_FACTOR 3
 
 // If we're at risk of filling the tokens queue,
 // the beam is reduced to keep only the best candidates in the
@@ -60,6 +64,11 @@
 // it has to be less than the number of 1D threads
 #define KALDI_CUDA_DECODER_HISTO_NBINS 255
 
+// Number of "heavy duty" process non emitting kernels
+// If more non emitting iterations are required, those will be done
+// in the one-CTA persistent kernel
+#define KALDI_CUDA_DECODER_N_NON_EMITTING_MAIN_ITERATIONS 2
+
 // Adaptive beam parameters
 // We will decrease the beam when we detect that we are generating too many
 // tokens
@@ -85,7 +94,6 @@
 // so that we can avoid triggering ApplyMaxActiveAndReduceBeam for just a few
 // tokens above the limit
 // at the end of the frame
-#define KALDI_CUDA_DECODER_MAX_ACTIVE_TOLERANCE 0.2
 
 #define KALDI_CUDA_DECODER_DIV_ROUND_UP(a, b) ((a + b - 1) / b)
 
@@ -97,6 +105,9 @@
     }                                                                   \
   }
 // Macro for checking cuda errors following a cuda launch or api call
+#ifdef NDEBUG
+#define KALDI_DECODER_CUDA_CHECK_ERROR()
+#else
 #define KALDI_DECODER_CUDA_CHECK_ERROR()                                  \
   {                                                                       \
     cudaError_t e = cudaGetLastError();                                   \
@@ -105,6 +116,7 @@
                                  false);                                  \
     }                                                                     \
   }
+#endif
 
 #define KALDI_DECODER_CUDA_API_CHECK_ERROR(e)                             \
   {                                                                       \
@@ -132,7 +144,8 @@
 #define KALDI_CUDA_DECODER_1D_BLOCK 256
 #define KALDI_CUDA_DECODER_LARGEST_1D_BLOCK 1024
 #define KALDI_CUDA_DECODER_ONE_THREAD_BLOCK 1
-
+#define KALDI_CUDA_DECODER_MAX_CTA_COUNT 4096u
+#define KALDI_CUDA_DECODER_MAX_CTA_PER_LANE 512u
 namespace kaldi {
 namespace cuda_decoder {
 
@@ -140,9 +153,25 @@ namespace cuda_decoder {
 // M is usually the batch size
 inline dim3 KaldiCudaDecoderNumBlocks(int N, int M) {
   dim3 grid;
-  // TODO MAX_NUM_BLOCKS.
   grid.x = KALDI_CUDA_DECODER_DIV_ROUND_UP(N, KALDI_CUDA_DECODER_1D_BLOCK);
+  unsigned int max_CTA_per_lane =
+      std::max(KALDI_CUDA_DECODER_MAX_CTA_COUNT / M, 1u);
+  grid.x = std::min(grid.x, max_CTA_per_lane);
   grid.y = M;
+  return grid;
+}
+
+// Use a fixed number of blocks for nlanes
+// Using the max number of CTAs possible for each lane,
+// according to KALDI_CUDA_DECODER_MAX_CTA_COUNT
+// and KALDI_CUDA_DECODER_MAX_CTA_PER_LANE
+inline dim3 KaldiCudaDecoderNumBlocks(int nlanes) {
+  dim3 grid;
+  unsigned int n_CTA_per_lane =
+      std::max(KALDI_CUDA_DECODER_MAX_CTA_COUNT / nlanes, 1u);
+  if (n_CTA_per_lane == 0) n_CTA_per_lane = 1;
+  grid.x = std::min(KALDI_CUDA_DECODER_MAX_CTA_PER_LANE, n_CTA_per_lane);
+  grid.y = nlanes;
   return grid;
 }
 
@@ -178,13 +207,14 @@ class DeviceMatrix {
     KALDI_ASSERT(nrows_ > 0);
     KALDI_ASSERT(ncols_ > 0);
     KALDI_ASSERT(!data_);
-    data_ = static_cast<T *>(CuDevice::Instantiate().Malloc(
-        (size_t)nrows_ * ncols_ * sizeof(*data_)));
+    CU_SAFE_CALL(cudaMalloc((void **)&data_,
+                            (size_t)nrows_ * ncols_ * sizeof(*data_)));
     KALDI_ASSERT(data_);
   }
   void Free() {
     KALDI_ASSERT(data_);
-    CuDevice::Instantiate().Free(data_);
+    CU_SAFE_CALL(cudaFree(data_));
+    data_ = nullptr;
   }
 
  protected:
@@ -195,6 +225,50 @@ class DeviceMatrix {
   DeviceMatrix() : data_(NULL), ncols_(0), nrows_(0) {}
 
   virtual ~DeviceMatrix() {
+    if (data_) Free();
+  }
+
+  void Resize(int32 nrows, int32 ncols) {
+    if (data_) Free();
+    KALDI_ASSERT(nrows > 0);
+    KALDI_ASSERT(ncols > 0);
+    nrows_ = nrows;
+    ncols_ = ncols;
+    Allocate();
+  }
+
+  T *MutableData() {
+    KALDI_ASSERT(data_);
+    return data_;
+  }
+  // abstract getInterface...
+};
+
+template <typename T>
+// if necessary, make a version that always use ncols_ as the next power of 2
+class HostMatrix {
+  T *data_;
+  void Allocate() {
+    KALDI_ASSERT(nrows_ > 0);
+    KALDI_ASSERT(ncols_ > 0);
+    KALDI_ASSERT(!data_);
+    CU_SAFE_CALL(cudaMallocHost((void **)&data_, (size_t)nrows_ * ncols_ * sizeof(*data_)));
+    KALDI_ASSERT(data_);
+  }
+  void Free() {
+    KALDI_ASSERT(data_);
+    CU_SAFE_CALL(cudaFreeHost(data_));
+    data_ = nullptr;
+  }
+
+ protected:
+  int32 ncols_;
+  int32 nrows_;
+
+ public:
+  HostMatrix() : data_(NULL), ncols_(0), nrows_(0) {}
+
+  virtual ~HostMatrix() {
     if (data_) Free();
   }
 
@@ -255,124 +329,22 @@ class DeviceLaneMatrix : public DeviceMatrix<T> {
 };
 
 template <typename T>
+class HostLaneMatrix : public HostMatrix<T> {
+ public:
+  LaneMatrixView<T> GetView() { return {this->MutableData(), this->ncols_}; }
+
+  T *lane(const int32 ilane) {
+    return &this->MutableData()[ilane * this->ncols_];
+  }
+};
+
+template <typename T>
 class DeviceChannelMatrix : public DeviceMatrix<T> {
  public:
   ChannelMatrixView<T> GetView() { return {this->MutableData(), this->ncols_}; }
   T *channel(const int32 ichannel) {
     return &this->MutableData()[ichannel * this->ncols_];
   }
-};
-
-// LaneCounters/ChannelCounters
-// The counters are all the singular values associated to a lane/channel
-// For instance  the main queue size. Or the min_cost of all tokens in that
-// queue
-// LaneCounters are used during computation
-struct LaneCounters {
-  // Contains both main_q_end and narcs
-  // End index of the main queue
-  // only tokens at index i with i < main_q_end
-  // are valid tokens
-  // Each valid token the subqueue main_q[main_q_local_offset, main_q_end[ has
-  // a number of outgoing arcs (out-degree)
-  // main_q_narcs is the sum of those numbers
-  // We sometime need to update both end and narcs at the same time using a
-  // single atomic,
-  // which is why they're packed together
-  int2 main_q_narcs_and_end;
-  // contains the requested queue length which can
-  // be larger then the actual queue length in the case of overflow
-  int32 main_q_requested;
-  int32 aux_q_requested;
-  int32 aux_q_end;
-  int32 post_expand_aux_q_end;  // used for double buffering
-  // Some tokens in the same frame share the same token.next_state
-  // main_q_n_extra_prev_tokens is the count of those tokens
-  int32 main_q_n_extra_prev_tokens;
-  // Depending on the value of the parameter "max_tokens_per_frame"
-  // we can end up with an overflow when generating the tokens for a frame
-  // We try to prevent this from happening using an adaptive beam
-  // If an overflow happens, then the kernels no longer insert any data into
-  // the queues and set overflow flag to true.
-  // queue length.
-  // Even if that flag is set, we can continue the execution (quality
-  // of the output can be lowered)
-  // We use that flag to display a warning to the user
-  int32 q_overflow;
-  // ExpandArcs reads the tokens in the index range [main_q_local_offset, end[
-  int32 main_q_local_offset;
-  // We transfer the tokens back to the host at the end of each frame.
-  // Which means that tokens at a frame  n > 0 have an offset compared to to
-  // those
-  // in frame n-1. main_q_global_offset is the overall offset of the current
-  // main_q,
-  // since frame 0
-  // It is used to set the prev_token index.
-  int32 main_q_global_offset;
-  // Same thing, but for main_q_n_extra_prev_tokens (those are also transfered
-  // back to host)
-  int32 main_q_extra_prev_tokens_global_offset;
-
-  // Minimum token for that frame
-  IntegerCostType min_int_cost;
-  // Current beam. Can be different from default_beam,
-  // because of the AdaptiveBeam process, or because of
-  // ApplyMaxActiveAndReduceBeam
-  IntegerCostType int_beam;
-  // Adaptive beam. The validity says until which index this adaptive beam is
-  // valid.
-  // After that index, we need to lower the adaptive beam
-  int2 adaptive_int_beam_with_validity_index;
-
-  // min_cost + beam
-  IntegerCostType int_cutoff;
-
-  // --- Only valid after calling GetBestCost
-  // min_cost and its arg. Can be different than min_cost, because we may
-  // include final costs
-  int2 min_int_cost_and_arg;
-  // Number of final tokens with cost < best + lattice_beam
-  int32 n_within_lattice_beam;
-  int32 has_reached_final;  // if there's at least one final token in the queue
-};
-
-// Channel counters
-// Their job is to save the state of a channel, when this channel is idle
-// The channel counters are loaded into the lane counters during the context
-// switches
-struct ChannelCounters {
-  // All the following values are just saved values from LaneCounters
-  // from the latest context-switch
-  int2 prev_main_q_narcs_and_end;
-  int32 prev_main_q_n_extra_prev_tokens;
-  int32 prev_main_q_global_offset;
-  int32 prev_main_q_extra_prev_tokens_global_offset;
-  CostType prev_beam;
-
-  // Only valid after calling GetBestCost
-  // different than min_int_cost : we include the "final" cost
-  int2 min_int_cost_and_arg_with_final;
-  int2 min_int_cost_and_arg_without_final;
-  //
-};
-
-class CudaDecoderException : public std::exception {
- public:
-  CudaDecoderException(const char *str_, const char *file_, int line_,
-                       const bool recoverable_)
-      : str(str_),
-        file(file_),
-        line(line_),
-        buffer(std::string(file) + ":" + std::to_string(line) + " :" +
-               std::string(str)),
-        recoverable(recoverable_) {}
-  const char *what() const throw() { return buffer.c_str(); }
-
-  const char *str;
-  const char *file;
-  const int line;
-  const std::string buffer;
-  const bool recoverable;
 };
 
 // InfoToken contains data that needs to be saved for the backtrack
@@ -415,6 +387,143 @@ __device__ __inline__ void SetSameFSTStateTokensList(int32 offset, int32 size,
   *info_token = {offset, -size};
 }
 
+// Information about the best path head
+// Used by partial hypotheses and endpoiting
+struct BestPathTracebackHead {
+  int index;
+  CostType relative_cost;
+
+  void Reset() { index = -1; }
+  bool IsSet() { return (index != -1); }
+};
+
+// LaneCounters/ChannelCounters
+// The counters are all the singular values associated to a lane/channel
+// For instance  the main queue size. Or the min_cost of all tokens in that
+// queue
+// LaneCounters are used during computation
+struct LaneCounters {
+  // hannel that this lane will compute for the current frame
+  ChannelId channel_to_compute;
+  // Pointer to the loglikelihoods array for this channel and current frame
+  const BaseFloat *loglikelihoods;
+  // Contains both main_q_end and narcs
+  // End index of the main queue
+  // only tokens at index i with i < main_q_end
+  // are valid tokens
+  // Each valid token the subqueue main_q[main_q_local_offset, main_q_end[ has
+  // a number of outgoing arcs (out-degree)
+  // main_q_narcs is the sum of those numbers
+  // We sometime need to update both end and narcs at the same time using a
+  // single atomic,
+  // which is why they're packed together
+  int2 main_q_narcs_and_end;
+  // contains the requested queue length which can
+  // be larger then the actual queue length in the case of overflow
+  int32 main_q_requested;
+  int32 aux_q_requested;
+  int32 aux_q_end;
+  int32 post_expand_aux_q_end;  // used for double buffering
+  // Some tokens in the same frame share the same token.next_state
+  // main_q_n_extra_prev_tokens is the count of those tokens
+  int32 main_q_n_extra_prev_tokens;
+  // Number of tokens created during the emitting stage
+  int32 main_q_n_emitting_tokens;
+  // Depending on the value of the parameter "max_tokens_per_frame"
+  // we can end up with an overflow when generating the tokens for a frame
+  // We try to prevent this from happening using an adaptive beam
+  // If an overflow happens, then the kernels no longer insert any data into
+  // the queues and set overflow flag to true.
+  // queue length.
+  // Even if that flag is set, we can continue the execution (quality
+  // of the output can be lowered)
+  // We use that flag to display a warning to the user
+  int32 q_overflow;
+  // ExpandArcs reads the tokens in the index range [main_q_local_offset, end[
+  int32 main_q_local_offset;
+  // We transfer the tokens back to the host at the end of each frame.
+  // Which means that tokens at a frame  n > 0 have an offset compared to to
+  // those
+  // in frame n-1. main_q_global_offset is the overall offset of the current
+  // main_q,
+  // since frame 0
+  // It is used to set the prev_token index.
+  int32 main_q_global_offset;
+  // Same thing, but for main_q_n_extra_prev_tokens (those are also transfered
+  // back to host)
+  int32 main_q_extra_prev_tokens_global_offset;
+  // Minimum token for that frame
+  IntegerCostType min_int_cost;
+  IntegerCostType int_relative_cost;
+  // Current beam. Can be different from default_beam,
+  // because of the AdaptiveBeam process, or because of
+  // ApplyMaxActiveAndReduceBeam
+  IntegerCostType int_beam;
+  // Adaptive beam. The validity says until which index this adaptive beam is
+  // valid.
+  // After that index, we need to lower the adaptive beam
+  int2 adaptive_int_beam_with_validity_index;
+  // min_cost + beam
+  IntegerCostType int_cutoff;
+  // The histogram for max_active will be computed between min_histo_cost
+  // and max_histo_cost. Set for each frame after emitting stage
+  CostType min_histo_cost;
+  CostType max_histo_cost;
+  CostType histo_bin_width;
+  bool compute_max_active;
+  // offsets used by concatenate_lanes_data_kernel
+  int32 main_q_end_lane_offset;
+  int32 main_q_n_emitting_tokens_lane_offset;
+  int32 main_q_n_extra_prev_tokens_lane_offset;
+
+  // --- Only valid after calling GetBestCost
+  // min_cost and its arg. Can be different than min_cost, because we may
+  // include final costs
+  int2 min_int_cost_and_arg;
+  // Number of final tokens with cost < best + lattice_beam
+  int32 n_within_lattice_beam;
+  int32 has_reached_final;  // if there's at least one final token in the queue
+  int32 prev_arg_min_int_cost;
+};
+
+// Channel counters
+// Their job is to save the state of a channel, when this channel is idle
+// The channel counters are loaded into the lane counters during the context
+// switches
+struct ChannelCounters {
+  // All the following values are just saved values from LaneCounters
+  // from the latest context-switch
+  int2 prev_main_q_narcs_and_end;
+  int32 prev_main_q_n_extra_prev_tokens;
+  int32 prev_main_q_global_offset;
+  int32 prev_main_q_extra_prev_tokens_global_offset;
+  CostType prev_beam;
+
+  // Only valid after calling GetBestCost
+  // different than min_int_cost : we include the "final" cost
+  int2 min_int_cost_and_arg_with_final;
+  int2 min_int_cost_and_arg_without_final;
+};
+
+class CudaDecoderException : public std::exception {
+ public:
+  CudaDecoderException(const char *str_, const char *file_, int line_,
+                       const bool recoverable_)
+      : str(str_),
+        file(file_),
+        line(line_),
+        buffer(std::string(file) + ":" + std::to_string(line) + " :" +
+               std::string(str)),
+        recoverable(recoverable_) {}
+  const char *what() const throw() { return buffer.c_str(); }
+
+  const char *str;
+  const char *file;
+  const int line;
+  const std::string buffer;
+  const bool recoverable;
+};
+
 // Used to store the index in the GPU hashmap of that FST state
 // The hashmap is only generated with the final main queue (post max_active_) of
 // each frame
@@ -451,7 +560,7 @@ struct __align__(16) HashmapValueT {
   // Number of tokens associated to that state
   int32 count;
   // minimum cost for that state + argmin
-  int2 min_and_argmin_int_cost;
+  unsigned long long min_and_argmin_int_cost_u64;
 };
 
 enum OVERFLOW_TYPE {
@@ -461,6 +570,28 @@ enum OVERFLOW_TYPE {
 };
 
 enum QUEUE_ID { MAIN_Q = 0, AUX_Q = 1 };
+
+// Used internally to generate partial paths
+struct PartialPathArc {
+  int32 token_idx;
+  int32 arc_idx;
+  int32 substring_end;
+  int32 olabel;
+
+  PartialPathArc(int32 _token_idx = -1, int32 _arc_idx = -1,
+                 int32 _substring_end = -1)
+      : token_idx(_token_idx),
+        arc_idx(_arc_idx),
+        substring_end(_substring_end),
+        olabel(-1) {}
+};
+
+// Partial hypothesis formatted and meant to be used by user
+struct PartialHypothesis {
+  std::string out_str;
+
+  void clear() { out_str.clear(); }
+};
 
 }  // end namespace cuda_decoder
 }  // end namespace kaldi

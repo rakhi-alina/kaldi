@@ -25,6 +25,8 @@
 #include "fstext/kaldi-fst-io.h"
 #include "kws/kaldi-kws.h"
 
+#include "fstext/openfst_compat.h"
+
 namespace kaldi {
 
 typedef KwsLexicographicArc Arc;
@@ -159,6 +161,7 @@ int main(int argc, char *argv[]) {
   try {
     using namespace kaldi;
     using namespace fst;
+    using std::vector;
     typedef kaldi::int32 int32;
     typedef kaldi::uint32 uint32;
     typedef kaldi::uint64 uint64;
@@ -169,7 +172,7 @@ int main(int argc, char *argv[]) {
         "a script to combine the final search results. Note that the index\n"
         "archive has a single key \"global\".\n\n"
         "Search has one or two outputs. The first one is mandatory and will\n"
-        "contain the seach output, i.e. list of all found keyword instances\n"
+        "contain the search output, i.e. list of all found keyword instances\n"
         "The file is in the following format:\n"
         "kw_id utt_id beg_frame end_frame neg_logprob\n"
         " e.g.: \n"
@@ -286,7 +289,6 @@ int main(int argc, char *argv[]) {
     ArcSort(&index, fst::ILabelCompare<KwsLexicographicArc>());
 
     int32 n_done = 0;
-    int32 n_fail = 0;
     for (; !keyword_reader.Done(); keyword_reader.Next()) {
       std::string key = keyword_reader.Key();
       VectorFst<StdArc> keyword = keyword_reader.Value();
@@ -335,7 +337,6 @@ int main(int argc, char *argv[]) {
         if (result_fst.Final(arc.nextstate) != Weight::One()) {
           KALDI_WARN << "The resulting FST does not have "
                      << "the expected structure for key " << key;
-          n_fail++;
           continue;
         }
 

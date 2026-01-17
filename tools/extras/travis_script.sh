@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # We take into account dependency pointers optionally set in the environment.
 # Typical usage shown below; any one can be safely left unset.
@@ -70,6 +70,7 @@ runvx cd tools
 runvx make -j$MAXPAR openfst "$CCC" CXXFLAGS="$CF" \
       OPENFST_CONFIGURE="--disable-static --enable-shared --disable-bin --disable-dependency-tracking"
 runvx make -j$MAXPAR cub "$CCC" CXXFLAGS="$CF"
+runvx ./install_portaudio.sh
 cd ..
 
 runvx cd src
